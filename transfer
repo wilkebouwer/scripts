@@ -1,0 +1,69 @@
+#!/bin/sh
+
+transferinfo() { cat << EOF
+transfer: privately share files on your server, automatically compress with multiple files
+
+https://wilkebouwer.nl/blog/build-a-simple-and-useful-file-sharing-service.html
+
+Dependencies: rsync zip
+Needs these environmental variables set:
+	TRANSFER_URL	     : "https://transfer.example.com/"
+	TRANSFER_SRCDIR	     : "\$HOME/Public/"
+	TRANSFER_RSYNC_CREDS : "admin@example.com:/var/www/transfer.example.com/"
+Usage: transfer <file(s)|dir(s)>
+	Run command without arguments to sync source folder to server (for example to delete file)
+EOF
+}
+
+while getopts '' o; do case "${o}" in
+        *) transferinfo; exit 1 ;;
+esac done
+
+# shellcheck disable=SC2016
+[ -z "$TRANSFER_URL" ] && echo '$TRANSFER_URL unset!' && exit 1
+
+domain=$(echo "$TRANSFER_URL" | tr -d '/') domain=${domain#*:}
+
+# shellcheck disable=SC2016
+[ ! -d "$TRANSFER_SRCDIR" ] && echo "The directory '$TRANSFER_SRCDIR' does not exist!" && exit 1
+# shellcheck disable=SC2016
+[ -z "$TRANSFER_RSYNC_CREDS" ] && echo '$TRANSFER_RSYNC_CREDS unset!' && exit 1
+
+TRANSFER_SRCDIR="${TRANSFER_SRCDIR}/"
+
+upload() {
+	rsync -aAXv --delete --groupmap=*:www-data "$TRANSFER_SRCDIR" "$TRANSFER_RSYNC_CREDS"/
+}
+
+[ -z "$1" ] && upload && exit
+
+! touch -c "$TRANSFER_SRCDIR" 2>/dev/null &&
+	echo "Failed to create directory in ${TRANSFER_SRCDIR} ! (Do you have permission to create files?)" &&
+	exit 1
+
+TRANSFER_URL="${TRANSFER_URL%/}"/
+
+shift $((OPTIND - 1))
+
+# Protect against the low chance of creating the same directory
+while true; do
+	privdir="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c16)/"
+	mkdir "${TRANSFER_SRCDIR}${privdir}" 2>/dev/null && break
+done
+
+# shellcheck disable=SC2015
+if [ -z "$2" ]; then
+	fileloc="${privdir}$(basename "$1" | tr ' ' _)"
+
+	if [ -d "$1" ]; then
+		fileloc="$fileloc".zip
+		cd "$1" && zip -q -r "${TRANSFER_SRCDIR}${fileloc}" . && upload
+	else
+		cp "$1" "${TRANSFER_SRCDIR}${fileloc}" && upload
+	fi
+else
+	fileloc="${privdir}$(date '+%y%m%d-%H%M-%S')".zip
+	zip -q -r "${TRANSFER_SRCDIR}${fileloc}" "$@" && upload
+fi &&
+	printf '\n%b\n' "${TRANSFER_URL}${fileloc}" ||
+	rm -rf "${TRANSFER_SRCDIR}${privdir}"
